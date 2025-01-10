@@ -45,6 +45,17 @@ func RunSubprocess(sc *SubprocessConfig) (int, error) {
 
 	subs := convertSubsToMap(sc.Subs)
 
+	if sc.RecurseUp {
+		currentDir, err := os.Getwd()
+		if err != nil {
+			return 0, err
+		}
+		sc.Filepath, err = findInParentTree(sc.Filepath, currentDir)
+		if err != nil {
+			return 0, err
+		}
+	}
+
 	switch sc.YamlInline {
 	case "":
 		secrets, err = secretsyml.ParseFromFile(sc.Filepath, sc.Environment, subs)

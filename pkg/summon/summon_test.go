@@ -48,6 +48,32 @@ func TestRunSubprocess(t *testing.T) {
 
 		assert.Equal(t, expectedValue, string(content))
 	})
+
+	t.Run("Finds secrets file in a directory above the working directory", func(t *testing.T) {
+		var err error
+		topDir := t.TempDir()
+
+		fileAbovePath := filepath.Join(topDir, "secrets.yml")
+		_, err = os.Create(fileAbovePath)
+		assert.NoError(t, err)
+
+		// Create a downwards directory hierarchy, starting from topDir, and
+		// chdir to it.
+		downDir := filepath.Join(topDir, "dir1", "dir2", "dir3")
+		err = os.MkdirAll(downDir, 0o700)
+		assert.NoError(t, err)
+		restore := chdir(t, downDir)
+		t.Cleanup(restore)
+
+		code, err := RunSubprocess(&SubprocessConfig{
+			Args:      []string{"true"},
+			RecurseUp: true,
+			Filepath:  "secrets.yml",
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, 0, code)
+	})
 }
 
 func TestHandleResultsFromProvider(t *testing.T) {
@@ -244,6 +270,7 @@ func TestDefaultVariableResolutionWithValue(t *testing.T) {
 		assert.Equal(t, expectedValue, string(content))
 	})
 }
+
 func TestConvertSubsToMap(t *testing.T) {
 	t.Run("Substitutions are returned as a map used later for interpolation", func(t *testing.T) {
 		input := []string{
@@ -318,12 +345,10 @@ func TestLocateFileRecurseUp(t *testing.T) {
 	filename := "test.txt"
 
 	t.Run("Finds file in current working directory", func(t *testing.T) {
-		topDir, err := os.MkdirTemp("", "summon")
-		assert.NoError(t, err)
-		defer os.RemoveAll(topDir)
+		topDir := t.TempDir()
 
 		localFilePath := filepath.Join(topDir, filename)
-		_, err = os.Create(localFilePath)
+		_, err := os.Create(localFilePath)
 		assert.NoError(t, err)
 
 		gotPath, err := findInParentTree(filename, topDir)
@@ -332,30 +357,26 @@ func TestLocateFileRecurseUp(t *testing.T) {
 		assert.Equal(t, localFilePath, gotPath)
 	})
 
-	t.Run("Finds file in a higher working directory", func(t *testing.T) {
-		topDir, err := os.MkdirTemp("", "summon")
-		assert.NoError(t, err)
-		defer os.RemoveAll(topDir)
+	t.Run("Finds file in a directory above the working directory", func(t *testing.T) {
+		topDir := t.TempDir()
 
-		higherFilePath := filepath.Join(topDir, filename)
-		_, err = os.Create(higherFilePath)
+		fileAbovePath := filepath.Join(topDir, filename)
+		_, err := os.Create(fileAbovePath)
 		assert.NoError(t, err)
 
 		// Create a downwards directory hierarchy, starting from topDir
 		downDir := filepath.Join(topDir, "dir1", "dir2", "dir3")
-		err = os.MkdirAll(downDir, 0700)
+		err = os.MkdirAll(downDir, 0o700)
 		assert.NoError(t, err)
 
 		gotPath, err := findInParentTree(filename, downDir)
 		assert.NoError(t, err)
 
-		assert.Equal(t, higherFilePath, gotPath)
+		assert.Equal(t, fileAbovePath, gotPath)
 	})
 
 	t.Run("returns a friendly error if file not found", func(t *testing.T) {
-		topDir, err := os.MkdirTemp("", "summon")
-		assert.NoError(t, err)
-		defer os.RemoveAll(topDir)
+		topDir := t.TempDir()
 
 		// A unlikely to exist file name
 		nonExistingFileName := strconv.FormatInt(time.Now().Unix(), 10)
@@ -363,31 +384,27 @@ func TestLocateFileRecurseUp(t *testing.T) {
 			"unable to locate file specified (%s): reached root of file system",
 			nonExistingFileName)
 
-		_, err = findInParentTree(nonExistingFileName, topDir)
+		_, err := findInParentTree(nonExistingFileName, topDir)
 		assert.EqualError(t, err, wantErrMsg)
 	})
 
 	t.Run("returns a friendly error if file is an absolute path", func(t *testing.T) {
-		topDir, err := os.MkdirTemp("", "summon")
-		assert.NoError(t, err)
-		defer os.RemoveAll(topDir)
+		topDir := t.TempDir()
 
 		absFileName := "/foo/bar/baz"
 		wantErrMsg := "file specified (/foo/bar/baz) is an absolute path: will not recurse up"
 
-		_, err = findInParentTree(absFileName, topDir)
+		_, err := findInParentTree(absFileName, topDir)
 		assert.EqualError(t, err, wantErrMsg)
 	})
 
 	t.Run("returns a friendly error in unexpected circumstances (100% coverage)", func(t *testing.T) {
-		topDir, err := os.MkdirTemp("", "summon")
-		assert.NoError(t, err)
-		defer os.RemoveAll(topDir)
+		topDir := t.TempDir()
 
 		fileNameWithNulByte := "pizza\x00margherita"
 		wantErrMsg := "unable to locate file specified (pizza\x00margherita): stat"
 
-		_, err = findInParentTree(fileNameWithNulByte, topDir)
+		_, err := findInParentTree(fileNameWithNulByte, topDir)
 		assert.Contains(t, err.Error(), wantErrMsg)
 	})
 }
@@ -412,6 +429,7 @@ func TestReturnStatusOfError(t *testing.T) {
 		assert.Equal(t, expected, err)
 	})
 }
+
 func TestNonInteractiveProviderFallback(t *testing.T) {
 	secrets := secretsyml.SecretsMap{
 		"key1": secretsyml.SecretSpec{Path: "path1"},
@@ -431,5 +449,28 @@ func TestNonInteractiveProviderFallback(t *testing.T) {
 	for _, result := range results {
 		assert.Equal(t, secrets[result.Key].Path, result.Value)
 		assert.Nil(t, result.Error)
+	}
+}
+
+// chdir changes the current working directory to the named directory and
+// returns a function that, when called, restores the original working
+// directory.
+//
+// Courtesy of https://github.com/golang/go/issues/45182
+// Can be replaced by https://pkg.go.dev/testing@master#T.Chdir
+// when Go 1.24 is out (2025-02).
+func chdir(t *testing.T, dir string) func() {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("chdir %s: %v", dir, err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	return func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restoring working directory: %v", err)
+		}
 	}
 }

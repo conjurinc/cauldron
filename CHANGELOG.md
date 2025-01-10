@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Fix: bring back the --up flag [#254 --up is broken: open secrets.yml: no such file or directory](https://github.com/cyberark/summon/issues/254).
+
 ## [0.10.1] - 2024-08-14
 
 ### Changed
